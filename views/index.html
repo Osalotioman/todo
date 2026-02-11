@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Todo</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Todo</h1>
+        <p class="subtitle">FastAPI + SQLite</p>
+      </header>
+
+      <section class="card">
+        <form id="create-form" class="create">
+          <input
+            id="title"
+            name="title"
+            type="text"
+            placeholder="Add a task…"
+            autocomplete="off"
+            maxlength="200"
+            required
+          />
+          <button type="submit">Add</button>
+        </form>
+
+        <div class="toolbar">
+          <div class="stats" id="stats"></div>
+          <div class="actions">
+            <button id="refresh" type="button" class="ghost">Refresh</button>
+            <button id="clear-completed" type="button" class="ghost">Clear completed</button>
+          </div>
+        </div>
+
+        <ul id="list" class="list" aria-label="Todo list"></ul>
+
+        <div id="error" class="error" hidden></div>
+      </section>
+
+      <footer class="footer">
+        <span>API: <code>/api/todos</code></span>
+      </footer>
+    </main>
+
+    <script>
+      const $ = (sel) => document.querySelector(sel);
+      const listEl = $("#list");
+      const statsEl = $("#stats");
+      const errorEl = $("#error");
+
+      function showError(message) {
+        errorEl.textContent = message;
+        errorEl.hidden = !message;
+      }
+
+      function escapeHtml(str) {
+        return str
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          headers: { "Content-Type": "application/json" },
+          ...options,
+        });
+        if (res.status === 204) return null;
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const detail = data?.detail ? `: ${data.detail}` : "";
+          throw new Error(`${res.status} ${res.statusText}${detail}`);
+        }
+        return data;
+      }
+
+      function render(todos) {
+        const total = todos.length;
+        const completed = todos.filter((t) => t.completed).length;
+        const active = total - completed;
+
+        statsEl.textContent = `${active} active · ${completed} completed · ${total} total`;
+
+        listEl.innerHTML = todos
+          .map((t) => {
+            const checked = t.completed ? "checked" : "";
+            const cls = t.completed ? "item done" : "item";
+            return `
+              <li class="${cls}" data-id="${t.id}">
+                <label class="check">
+                  <input type="checkbox" ${checked} />
+                  <span class="mark"></span>
+                </label>
+                <input class="text" value="${escapeHtml(t.title)}" />
+                <button class="danger" title="Delete" aria-label="Delete">✕</button>
+              </li>
+            `.trim();
+          })
+          .join("\n");
+      }
+
+      async function load() {
+        showError("");
+        const todos = await api("/api/todos");
+        render(todos);
+        return todos;
+      }
+
+      async function create(title) {
+        return api("/api/todos", {
+          method: "POST",
+          body: JSON.stringify({ title }),
+        });
+      }
+
+      async function patch(id, payload) {
+        return api(`/api/todos/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      }
+
+      async function remove(id) {
+        return api(`/api/todos/${id}`, { method: "DELETE" });
+      }
+
+      $("#create-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const input = $("#title");
+        const title = input.value.trim();
+        if (!title) return;
+        try {
+          await create(title);
+          input.value = "";
+          await load();
+        } catch (err) {
+          showError(err.message || String(err));
+        }
+      });
+
+      $("#refresh").addEventListener("click", async () => {
+        try {
+          await load();
+        } catch (err) {
+          showError(err.message || String(err));
+        }
+      });
+
+      $("#clear-completed").addEventListener("click", async () => {
+        try {
+          const todos = await api("/api/todos");
+          const completed = todos.filter((t) => t.completed);
+          for (const t of completed) {
+            await remove(t.id);
+          }
+          await load();
+        } catch (err) {
+          showError(err.message || String(err));
+        }
+      });
+
+      listEl.addEventListener("change", async (e) => {
+        const li = e.target.closest("li[data-id]");
+        if (!li) return;
+        const id = Number(li.dataset.id);
+        if (Number.isNaN(id)) return;
+        if (e.target.matches('input[type="checkbox"]')) {
+          try {
+            await patch(id, { completed: e.target.checked });
+            await load();
+          } catch (err) {
+            showError(err.message || String(err));
+          }
+        }
+      });
+
+      listEl.addEventListener("blur", async (e) => {
+        const li = e.target.closest("li[data-id]");
+        if (!li) return;
+        const id = Number(li.dataset.id);
+        if (Number.isNaN(id)) return;
+        if (e.target.matches(".text")) {
+          const title = e.target.value.trim();
+          if (!title) {
+            // Revert if user blanked it
+            await load();
+            return;
+          }
+          try {
+            await patch(id, { title });
+            await load();
+          } catch (err) {
+            showError(err.message || String(err));
+          }
+        }
+      }, true);
+
+      listEl.addEventListener("click", async (e) => {
+        const li = e.target.closest("li[data-id]");
+        if (!li) return;
+        const id = Number(li.dataset.id);
+        if (Number.isNaN(id)) return;
+        if (e.target.matches("button.danger")) {
+          try {
+            await remove(id);
+            await load();
+          } catch (err) {
+            showError(err.message || String(err));
+          }
+        }
+      });
+
+      // Initial load
+      load().catch((err) => showError(err.message || String(err)));
+    </script>
+  </body>
+</html>
